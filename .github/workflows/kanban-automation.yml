@@ -1,0 +1,73 @@
+name: Kanban Board Automation
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]  
+
+jobs:
+  move-to-in-progress:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mover tarjeta al Kanban ("In Progress")
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // 1. Obtener el número de la issue asociada al PR
+            const issueNumber = context.payload.pull_request.number;
+            
+            // 2. Encontrar el proyecto Kanban en el repo
+            const projects = await github.rest.projects.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            });
+            const board = projects.data.find(p => p.name === 'Mi Tablero Kanban');
+            if (!board) {
+              core.setFailed('No se encontró el proyecto "Mi Tablero Kanban"');
+              return;
+            }
+            
+            // 3. Encontrar la columna "In Progress"
+            const cols = await github.rest.projects.listColumns({
+              project_id: board.id
+            });
+            const inProgress = cols.data.find(c => c.name === 'In Progress');
+            if (!inProgress) {
+              core.setFailed('No se encontró la columna "In Progress"');
+              return;
+            }
+            
+            // 4. Buscar la tarjeta que referencia esta issue
+            const cards = await github.rest.projects.listCards({
+              column_id: inProgress.id  // ojo: podrías buscar en todas las columnas si no está ya en "In Progress"
+            });
+            // alternativa: recorrer todas las columnas y sus tarjetas para encontrar la card correcta
+            let card = cards.data.find(c =>
+              c.content_url && c.content_url.endsWith(`/issues/${issueNumber}`)
+            );
+            
+            // 5. Si no está aún en "In Progress", moverla
+            if (!card) {
+              // primero buscar en TODAS las columnas
+              for (const col of cols.data) {
+                const allCards = await github.rest.projects.listCards({ column_id: col.id });
+                const found = allCards.data.find(c => 
+                  c.content_url && c.content_url.endsWith(`/issues/${issueNumber}`)
+                );
+                if (found) {
+                  card = found;
+                  break;
+                }
+              }
+            }
+            
+            if (card && card.column_url.endsWith(inProgress.id.toString()) === false) {
+              await github.rest.projects.moveCard({
+                card_id: card.id,
+                column_id: inProgress.id,
+                position: 'top'
+              });
+              core.info(`Issue #${issueNumber} movida a "In Progress"`);
+            } else {
+              core.info(`Issue #${issueNumber} ya está en "In Progress" o no tiene tarjeta.`);
+            }
